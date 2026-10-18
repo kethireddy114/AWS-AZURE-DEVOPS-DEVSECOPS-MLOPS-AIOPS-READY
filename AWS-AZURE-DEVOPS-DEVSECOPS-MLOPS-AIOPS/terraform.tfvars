@@ -5,7 +5,11 @@ resource_groups = {
     location = "East US"
     
   }
-  
+  rg2 = {
+    name     = "rg-dev2"
+    location = "East US"
+    
+  }
   
 }  
 
