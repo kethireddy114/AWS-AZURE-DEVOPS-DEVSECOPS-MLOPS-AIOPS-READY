@@ -1,0 +1,300 @@
+name: azuredevops-pipelines
+
+parameters:
+
+- name: Tflint
+  displayName: 'Do you want to Run TFLint?'
+  type: boolean
+  default: false
+
+- name: TfSec
+  displayName: 'Do you want to Run TfSec?'
+  type: boolean
+  default: false
+
+- name: Checkov
+  displayName: 'Do you want to Run Checkov?'
+  type: boolean
+  default: false
+
+- name: terraformInit
+  displayName: 'Do you want to Run terraformInit?'
+  type: boolean
+  default: false
+
+
+trigger:
+- main
+
+
+pool: etel-pool
+
+
+stages:
+
+# ============================================================
+# TFLINT
+# ============================================================
+
+- stage: Tflint
+  displayName: 'TFLint Scan'
+  condition: eq('${{ parameters.Tflint }}', 'true')
+
+  jobs:
+  - job: Tflint
+    displayName: 'TFLint'
+
+    steps:
+
+    - task: CmdLine@2
+      displayName: 'TFLint Scan'
+      continueOnError: true
+      inputs:
+        script: |
+          echo ==========================================
+          echo              TFLINT SCAN
+          echo ==========================================
+
+          tflint --init
+
+          tflint --format compact
+
+          if errorlevel 1 (
+            echo ##vso[task.logissue type=error]TFLint found issues. Review the TFLint output above.
+            exit /b 0
+          )
+
+          echo TFLint completed successfully.
+
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+
+
+# ============================================================
+# TFSEC
+# ============================================================
+
+- stage: TfSec
+  displayName: 'TfSec Security Scan'
+  condition: eq('${{ parameters.TfSec }}', 'true')
+  dependsOn: []
+
+  jobs:
+  - job: TfSec
+    displayName: 'TfSec'
+
+    steps:
+
+    - task: CmdLine@2
+      displayName: 'TfSec Security Scan'
+      continueOnError: true
+      inputs:
+        script: |
+          echo ==========================================
+          echo           TFSEC SECURITY SCAN
+          echo ==========================================
+
+          tfsec .
+
+          if errorlevel 1 (
+            echo ##vso[task.logissue type=error]TfSec found security issues. Review the TfSec output above.
+            exit /b 0
+          )
+
+          echo TfSec completed successfully.
+
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+
+
+# ============================================================
+# CHECKOV
+# ============================================================
+
+- stage: Checkov
+  displayName: 'Checkov Security Scan'
+  condition: eq('${{ parameters.Checkov }}', 'true')
+  dependsOn: []
+ 
+
+  jobs:
+  - job: Checkov
+    displayName: 'Checkov'
+
+    steps:
+
+    - task: CmdLine@2
+      displayName: 'Checkov IaC Security Scan'
+      continueOnError: true
+      inputs:
+        script: |
+          echo ==========================================
+          echo          CHECKOV SECURITY SCAN
+          echo ==========================================
+
+          py -m checkov -d . --framework terraform --output cli
+
+          if errorlevel 1 (
+            echo ##vso[task.logissue type=error]Checkov found IaC security issues. Review the Checkov output above.
+            exit /b 0
+          )
+
+          echo Checkov completed successfully.
+
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+
+
+# ============================================================
+# TERRAFORM INIT + FMT + VALIDATE
+# ============================================================
+
+- stage: terraformInit
+  displayName: 'Terraform Init'
+  dependsOn:
+  - Tflint
+  - TfSec
+  - Checkov
+
+  
+
+  condition: succeededOrFailed()
+
+  jobs:
+  - job: terraformInit
+    displayName: 'Terraform Init'
+
+    steps:
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Init'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+        backendServiceArm: 'AZURE-SERVICE-CONNECTION'
+        backendAzureRmStorageAccountName: 'storage1sep'
+        backendAzureRmContainerName: 'container1sep'
+        backendAzureRmKey: 'dev.terraform.tfstate'
+
+
+    - task: TerraformTask@5
+      displayName: 'Terraform FMT'
+      inputs:
+        provider: 'azurerm'
+        command: 'custom'
+        customCommand: 'fmt'
+        commandOptions: ''
+        outputTo: 'console'
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+        environmentServiceNameAzureRM: 'AZURE-SERVICE-CONNECTION'
+
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Validate'
+      inputs:
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+
+
+# ============================================================
+# TERRAFORM PLAN
+# ============================================================
+
+- stage: terraformPlan
+  displayName: 'Terraform Plan'
+  dependsOn: terraformInit
+  condition: succeeded()
+
+  jobs:
+  - job: terraformPlan
+    displayName: 'Terraform Plan'
+
+    steps:
+    - task: TerraformTask@5
+      displayName: 'Terraform Init'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+        backendServiceArm: 'AZURE-SERVICE-CONNECTION'
+        backendAzureRmStorageAccountName: 'storage1sep'
+        backendAzureRmContainerName: 'container1sep'
+        backendAzureRmKey: 'dev.terraform.tfstate'
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Plan'
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+        environmentServiceNameAzureRM: 'AZURE-SERVICE-CONNECTION'
+
+
+# ============================================================
+# MANUAL APPROVAL
+# ============================================================
+
+- stage: ManualValidation
+  displayName: 'Manual Approval'
+  dependsOn: terraformPlan
+  condition: succeeded()
+
+  jobs:
+
+  - job: WaitForApproval
+    displayName: 'Wait for Manual Approval'
+    pool: server
+    timeoutInMinutes: 1440
+
+    steps:
+
+    - task: ManualValidation@1
+      displayName: 'Approve Terraform Apply'
+      timeoutInMinutes: 120
+      inputs:
+        notifyUsers: 'kethireddyayanish114@gmail.com'
+        instructions: |
+          Review the Terraform Plan and security scan results.
+
+          TFLint
+          TfSec
+          Checkov
+
+          Approve this validation to continue with Terraform Apply.
+        onTimeout: 'reject'
+
+
+# ============================================================
+# TERRAFORM APPLY
+# ============================================================
+
+- stage: terraformApply
+  displayName: 'Terraform Apply'
+  dependsOn: ManualValidation
+  condition: succeeded()
+
+  jobs:
+  - job: terraformApply
+    displayName: 'Terraform Apply'
+
+    steps:
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Init'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+        backendServiceArm: 'AZURE-SERVICE-CONNECTION'
+        backendAzureRmStorageAccountName: 'storage1sep'
+        backendAzureRmContainerName: 'container1sep'
+        backendAzureRmKey: 'dev.terraform.tfstate'
+
+
+    - task: TerraformTask@5
+      displayName: 'Terraform Apply'
+      inputs:
+        provider: 'azurerm'
+        command: 'apply'
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+        environmentServiceNameAzureRM: 'AZURE-SERVICE-CONNECTION'
+

@@ -1,0 +1,5 @@
+variable nic {
+}
+
+variable vm {
+}
